@@ -2,7 +2,7 @@ import os
 
 
 MODULE_NAME = "DeerSign"
-MODULE_ENABLED = True
+MODULE_ENABLED = False
 SWITCH_NAME = "鹿管"
 MODULE_DESCRIPTION = "鹿管签到模块，支持按月签到、补签、代签、日历和排行榜"
 

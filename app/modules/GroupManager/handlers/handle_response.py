@@ -5,6 +5,13 @@ from utils.generate import generate_text_message, generate_at_message
 from api.message import send_group_msg
 import re
 
+try:
+    from modules.KernelActivity.service import get_effective_activity
+except Exception:
+    # KernelActivity 被禁用或加载失败时，保持原有群发言时间判断。
+    def get_effective_activity(group_id, user_id, napcat_last_sent=0):
+        return int(napcat_last_sent or 0)
+
 # 临时缓存：用于存储通过echo标识获取到的群历史消息
 # key: 完整的echo字符串（如 get_group_msg_history-{group_id}-{note}）
 # value: messages 列表
@@ -61,17 +68,23 @@ class ResponseHandler:
                     nickname = member.get("nickname", "")
                     card = member.get("card", "")
 
-                    # 如果最后发言时间小于阈值时间，说明超过了指定天数未发言
-                    if last_sent_time < threshold_time:
+                    # 综合群内最后发言与任务系统交互时间，避免误判只参与任务的成员。
+                    effective_last_active = get_effective_activity(
+                        group_id, user_id, last_sent_time
+                    )
+
+                    if effective_last_active < threshold_time:
                         inactive_users.append(
                             {
                                 "user_id": user_id,
                                 "nickname": nickname,
                                 "card": card,
                                 "last_sent_time": last_sent_time,
+                                "effective_last_active": effective_last_active,
                                 "days_inactive": (
-                                    (current_time - last_sent_time) // (24 * 60 * 60)
-                                    if last_sent_time > 0
+                                    (current_time - effective_last_active)
+                                    // (24 * 60 * 60)
+                                    if effective_last_active > 0
                                     else "从未发言"
                                 ),
                             }
@@ -82,11 +95,19 @@ class ResponseHandler:
                 for user in inactive_users:
                     message.append(generate_at_message(user["user_id"]))
 
-                message.append(
-                    generate_text_message(
-                        f"\n\n\n以上用户{days}天未发言，请保持活跃，长时间未发言可能会被自动移出群聊，请及时冒泡"
+                if inactive_users:
+                    message.append(
+                        generate_text_message(
+                            f"\n\n\n以上用户{days}天未发言且未参与任务系统，请保持活跃。"
+                            "查看任务、历史任务、任务详情或私聊刷新活跃均可更新活跃度。"
+                        )
                     )
-                )
+                else:
+                    message.append(
+                        generate_text_message(
+                            f"没有发现超过{days}天未发言且未参与任务系统的成员。"
+                        )
+                    )
 
                 # 发送消息
                 await send_group_msg(self.websocket, group_id, message)

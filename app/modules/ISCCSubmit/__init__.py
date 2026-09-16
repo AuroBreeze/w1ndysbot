@@ -2,7 +2,7 @@ import os
 
 
 MODULE_NAME = "ISCCSubmit"
-MODULE_ENABLED = True
+MODULE_ENABLED = False
 SWITCH_NAME = "iscc"
 MODULE_DESCRIPTION = (
     "ISCC 平台自动提交 flag 模块，同时支持擂台赛提交监控（按心跳轮询指定 team_id，新提交通知管理员）"

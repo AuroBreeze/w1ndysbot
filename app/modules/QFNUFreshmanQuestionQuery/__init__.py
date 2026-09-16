@@ -6,7 +6,7 @@ MODULE_NAME = "QFNUFreshmanQuestionQuery"
 
 
 # 模块是否启用（默认开启）
-MODULE_ENABLED = True
+MODULE_ENABLED = False
 # 模块开关名称
 SWITCH_NAME = "qfnufqq"
 
