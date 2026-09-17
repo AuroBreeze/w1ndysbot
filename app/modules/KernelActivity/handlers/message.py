@@ -1,5 +1,7 @@
 import re
+import time
 
+from api.group import get_group_member_list
 from api.message import send_group_msg, send_private_msg
 from core.get_group_list import get_group_name_by_id
 from core.get_group_member_list import get_group_member_user_ids
@@ -112,6 +114,99 @@ def _can_access_group(group_id, user_id):
     return str(user_id) in get_group_member_user_ids(str(group_id))
 
 
+def _format_activity_age(timestamp, now=None):
+    if not timestamp:
+        return "无记录"
+    now = int(now or time.time())
+    seconds = max(0, now - int(timestamp))
+    days, remainder = divmod(seconds, 86400)
+    hours = remainder // 3600
+    if days:
+        return f"{days}天前"
+    if hours:
+        return f"{hours}小时前"
+    return "1小时内"
+
+
+def _find_member(members, user_id):
+    user_id = str(user_id)
+    for member in members:
+        if str(member.get("user_id", "")) == user_id:
+            return member
+    return None
+
+
+def _activity_detail_text(group_id, member, now=None):
+    now = int(now or time.time())
+    user_id = str(member.get("user_id", ""))
+    last_sent = int(member.get("last_sent_time", 0) or 0)
+    task_record = service.get_activity(group_id, user_id)
+    task_active = int(task_record["last_active_at"]) if task_record else 0
+    effective = max(last_sent, task_active)
+    if effective == task_active and task_active >= last_sent and task_record:
+        source = f"任务系统（{task_record['source']}）"
+    elif effective == last_sent and last_sent:
+        source = "群内发言"
+    else:
+        source = "无"
+    display_name = member.get("card") or member.get("nickname") or user_id
+    return (
+        f"👤 {display_name}（{user_id}）\n"
+        f"群内最后发言：{service.format_time(last_sent)}（{_format_activity_age(last_sent, now)}）\n"
+        f"任务系统活跃：{service.format_time(task_active)}（{_format_activity_age(task_active, now)}）\n"
+        f"综合活跃时间：{service.format_time(effective)}（{_format_activity_age(effective, now)}）\n"
+        f"最近活跃来源：{source}"
+    )
+
+
+def _group_activity_report(group_id, members, days, now=None, bot_user_id=None):
+    now = int(now or time.time())
+    threshold = now - int(days) * 86400
+    active, inactive, unknown = 0, [], []
+    considered = 0
+    for member in members:
+        if (
+            member.get("role") in {"owner", "admin"}
+            or member.get("is_robot")
+            or (bot_user_id and str(member.get("user_id", "")) == str(bot_user_id))
+        ):
+            continue
+        considered += 1
+        user_id = str(member.get("user_id", ""))
+        last_sent = int(member.get("last_sent_time", 0) or 0)
+        effective = service.get_effective_activity(group_id, user_id, last_sent)
+        name = member.get("card") or member.get("nickname") or user_id
+        if not effective:
+            unknown.append(f"{name}（{user_id}）：无活跃记录")
+        elif effective < threshold:
+            inactive.append(f"{name}（{user_id}）：{_format_activity_age(effective, now)}")
+        else:
+            active += 1
+    lines = [
+        f"📊 本群综合活跃度检查（{days}天）",
+        "",
+        f"普通成员：{considered}人",
+        f"近期活跃：{active}人",
+        f"超过阈值：{len(inactive)}人",
+        f"无有效记录：{len(unknown)}人",
+    ]
+    candidates = inactive + unknown
+    if candidates:
+        lines.extend(["", "⚠️ 不活跃候选：", *candidates[:50]])
+        if len(candidates) > 50:
+            lines.append(f"另有{len(candidates) - 50}人未显示，请缩短群范围或分批处理。")
+    else:
+        lines.extend(["", "没有发现不活跃候选成员。"])
+    lines.extend(
+        [
+            "",
+            "判断依据：群内最后发言与任务系统最后活跃取较新值。",
+            "本命令只生成检查报告，不会自动踢人。",
+        ]
+    )
+    return "\n".join(lines)
+
+
 async def _notify_subscribers(websocket, task, heading, changes=None):
     group_name = get_group_name_by_id(task["group_id"]) or f"群{task['group_id']}"
     extra = f"\n\n变更：\n" + "\n".join(changes) if changes else ""
@@ -149,6 +244,43 @@ async def _show_task_list(websocket, target, message_id, group_id, user_id, hist
 
 
 async def _handle_common(websocket, raw, user_id, message_id, group_id, reply, is_admin):
+    match = re.fullmatch(r"查询活跃度(?:\s+(?:\[CQ:at,qq=(\d+)(?:,[^]]*)?\]|(\d+)))?", raw)
+    if match:
+        target_user_id = match.group(1) or match.group(2) or user_id
+        if target_user_id != user_id and not is_admin:
+            await reply("只有群管理员可以查询其他成员的活跃度。")
+            return True
+        service.mark_active(group_id, user_id, "activity_check")
+        await get_group_member_list(
+            websocket,
+            group_id,
+            True,
+            note=(
+                f"KernelActivity-activity-detail-requester={user_id}"
+                f"-target={target_user_id}-message={message_id}"
+            ),
+        )
+        return True
+    match = re.fullmatch(r"(?:检查活跃度|活跃度检查)(?:\s+(\d+))?", raw)
+    if match:
+        if not is_admin:
+            await reply("只有群管理员可以执行全群活跃度检查。")
+            return True
+        days = int(match.group(1) or 30)
+        if not 1 <= days <= 3650:
+            await reply("检查天数必须是 1 到 3650 之间的整数。")
+            return True
+        service.mark_active(group_id, user_id, "activity_check")
+        await get_group_member_list(
+            websocket,
+            group_id,
+            True,
+            note=(
+                f"KernelActivity-activity-report-days={days}"
+                f"-requester={user_id}-message={message_id}"
+            ),
+        )
+        return True
     if raw == "当前任务":
         await _show_task_list(websocket, group_id, message_id, group_id, user_id, False)
         return True
@@ -399,3 +531,44 @@ async def handle_private_message(websocket, msg):
         async def reply(text):
             await _private_reply(websocket, user_id, message_id, text)
         await _handle_common(websocket, raw, user_id, message_id, task["group_id"], reply, is_system_admin(user_id))
+
+
+async def handle_response(websocket, msg):
+    """处理本模块主动请求的最新群成员列表。"""
+    echo = msg.get("echo", "")
+    if not isinstance(echo, str) or "-KernelActivity-activity-" not in echo:
+        return
+    group_match = re.search(r"group_id=(\d+)", echo)
+    message_match = re.search(r"-message=([^\-]+)$", echo)
+    if not group_match or not message_match:
+        logger.warning(f"[{MODULE_NAME}]无法解析活跃度检查响应: {echo}")
+        return
+    group_id = group_match.group(1)
+    message_id = message_match.group(1)
+    if msg.get("status") != "ok":
+        await _group_reply(websocket, group_id, message_id, "获取群成员列表失败，请稍后重试。")
+        return
+    members = msg.get("data")
+    if not isinstance(members, list):
+        await _group_reply(websocket, group_id, message_id, "获取群成员列表失败，请稍后重试。")
+        return
+
+    detail_match = re.search(r"activity-detail-requester=(\d+)-target=(\d+)", echo)
+    if detail_match:
+        member = _find_member(members, detail_match.group(2))
+        if member:
+            text = "📈 成员活跃度\n\n" + _activity_detail_text(group_id, member)
+        else:
+            text = "没有在当前群成员列表中找到该成员。"
+        await _group_reply(websocket, group_id, message_id, text, expire=120)
+        return
+
+    report_match = re.search(r"activity-report-days=(\d+)-requester=(\d+)", echo)
+    if report_match:
+        text = _group_activity_report(
+            group_id,
+            members,
+            int(report_match.group(1)),
+            bot_user_id=msg.get("self_id"),
+        )
+        await _group_reply(websocket, group_id, message_id, text, expire=300)

@@ -164,6 +164,45 @@ class KernelActivityServiceTestCase(unittest.TestCase):
         self.assertEqual(self.service.subscribers("10001"), ["30002"])
         self.assertEqual(self.service.subscriptions("30001"), ["10002"])
 
+    def test_subscribing_counts_as_viewing_current_tasks(self):
+        current = self.service.create_task("10001", "当前任务", "内容", 7, "20001")
+        other_group = self.service.create_task("10002", "其他群任务", "内容", 7, "20001")
+
+        self.service.set_subscription("10001", "30001", True)
+
+        self.assertEqual(self.service.task_stats(current["id"])["views"], 1)
+        self.assertEqual(self.service.task_stats(other_group["id"])["views"], 0)
+
+    def test_new_task_counts_existing_subscribers_as_viewers(self):
+        self.service.set_subscription("10001", "30001", True)
+        self.service.set_subscription("10001", "30002", True)
+
+        task = self.service.create_task("10001", "新任务", "内容", 7, "20001")
+
+        self.assertEqual(self.service.task_stats(task["id"])["views"], 2)
+
+    def test_unsubscribing_does_not_count_as_a_view(self):
+        task = self.service.create_task("10001", "任务", "内容", 7, "20001")
+
+        self.service.set_subscription("10001", "30001", False)
+
+        self.assertEqual(self.service.task_stats(task["id"])["views"], 0)
+
+    def test_initialize_backfills_existing_subscribers_as_viewers(self):
+        task = self.service.create_task("10001", "已有任务", "内容", 7, "20001")
+        with closing(sqlite3.connect(self.database_path)) as conn:
+            with conn:
+                conn.execute(
+                    """INSERT INTO subscriptions(
+                           group_id,user_id,enabled,created_at,updated_at
+                       ) VALUES(?,?,?,?,?)""",
+                    ("10001", "30001", 1, 1, 1),
+                )
+
+        service_module.KernelActivityService()
+
+        self.assertEqual(self.service.task_stats(task["id"])["views"], 1)
+
     def test_first_subscription_becomes_default_group(self):
         self.service.set_subscription("10001", "30001", True)
         self.service.set_subscription("10002", "30001", True)

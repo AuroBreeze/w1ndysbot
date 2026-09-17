@@ -118,6 +118,19 @@ class KernelActivityService:
                     ON activity_records(group_id, user_id);
                 """
             )
+            now = int(time.time())
+            # 兼容升级前的已有数据：现有订阅者也应计入当前有效任务的查看人数。
+            conn.execute(
+                """INSERT OR IGNORE INTO task_views(
+                       task_id,group_id,user_id,first_viewed_at,last_viewed_at,view_count
+                   )
+                   SELECT t.id,t.group_id,s.user_id,?,?,1
+                   FROM tasks t
+                   JOIN subscriptions s ON s.group_id=t.group_id AND s.enabled=1
+                   WHERE t.status='active'
+                     AND (t.deadline_at IS NULL OR t.deadline_at>?)""",
+                (now, now, now),
+            )
 
     def mark_active(self, group_id, user_id, source, now=None):
         now = int(now or time.time())
@@ -178,6 +191,21 @@ class KernelActivityService:
                 """INSERT INTO tasks(task_code,group_id,title,content,deadline_at,status,
                    publisher_id,created_at,updated_at) VALUES(?,?,?,?,?,'active',?,?,?)""",
                 (code, str(group_id), title, content, deadline_at, str(publisher_id), now, now),
+            )
+            task_id = conn.execute(
+                "SELECT id FROM tasks WHERE task_code=?", (code,)
+            ).fetchone()[0]
+            # 订阅者会收到任务私聊推送，按产品约定视为已查看该任务。
+            conn.execute(
+                """INSERT INTO task_views(
+                       task_id,group_id,user_id,first_viewed_at,last_viewed_at,view_count
+                   )
+                   SELECT ?,?,user_id,?,?,1 FROM subscriptions
+                   WHERE group_id=? AND enabled=1
+                   ON CONFLICT(task_id,user_id) DO UPDATE SET
+                       last_viewed_at=excluded.last_viewed_at,
+                       view_count=task_views.view_count+1""",
+                (task_id, str(group_id), now, now, str(group_id)),
             )
         self.mark_active(group_id, publisher_id, "task_publish", now)
         return self.get_task(code)
@@ -331,6 +359,20 @@ class KernelActivityService:
                    enabled=excluded.enabled,updated_at=excluded.updated_at""",
                 (group_id, user_id, int(enabled), now, now),
             )
+            if enabled:
+                # 主动订阅意味着成员选择接收本群任务，将当前有效任务计为已查看。
+                conn.execute(
+                    """INSERT INTO task_views(
+                           task_id,group_id,user_id,first_viewed_at,last_viewed_at,view_count
+                       )
+                       SELECT id,group_id,?,?,?,1 FROM tasks
+                       WHERE group_id=? AND status='active'
+                         AND (deadline_at IS NULL OR deadline_at>?)
+                       ON CONFLICT(task_id,user_id) DO UPDATE SET
+                           last_viewed_at=excluded.last_viewed_at,
+                           view_count=task_views.view_count+1""",
+                    (user_id, now, now, group_id, now),
+                )
             preference = conn.execute(
                 "SELECT default_group_id FROM user_preferences WHERE user_id=?",
                 (user_id,),

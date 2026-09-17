@@ -3,6 +3,8 @@ import unittest
 from unittest.mock import patch
 
 from modules.KernelActivity.handlers.message import (
+    _activity_detail_text,
+    _group_activity_report,
     _parse_deadline,
     _parse_fields,
     _send_published_task,
@@ -76,6 +78,48 @@ class MessageParsingTestCase(unittest.TestCase):
     def test_parse_deadline_rejects_unreasonable_duration(self):
         with self.assertRaises(ValueError):
             _parse_deadline("3651")
+
+    def test_activity_detail_uses_newer_task_activity(self):
+        member = {
+            "user_id": "10001",
+            "card": "测试成员",
+            "last_sent_time": 1_000,
+        }
+        with patch(
+            "modules.KernelActivity.handlers.message.service.get_activity",
+            return_value={"last_active_at": 2_000, "source": "task_history_view"},
+        ):
+            text = _activity_detail_text("20001", member, now=3_000)
+
+        self.assertIn("测试成员（10001）", text)
+        self.assertIn("任务系统（task_history_view）", text)
+        self.assertIn("1970-01-01 08:33", text)
+
+    def test_group_activity_report_combines_sources_and_skips_admins(self):
+        members = [
+            {"user_id": "1", "nickname": "群主", "role": "owner", "last_sent_time": 0},
+            {"user_id": "2", "nickname": "活跃", "role": "member", "last_sent_time": 900_000},
+            {"user_id": "3", "nickname": "过期", "role": "member", "last_sent_time": 100},
+            {"user_id": "4", "nickname": "未知", "role": "member", "last_sent_time": 0},
+            {"user_id": "5", "nickname": "机器人", "role": "member", "last_sent_time": 0},
+        ]
+        with patch(
+            "modules.KernelActivity.handlers.message.service.get_effective_activity",
+            side_effect=[900_000, 100, 0],
+        ):
+            text = _group_activity_report(
+                "20001", members, 5, now=1_000_000, bot_user_id="5"
+            )
+
+        self.assertIn("普通成员：3人", text)
+        self.assertIn("近期活跃：1人", text)
+        self.assertIn("超过阈值：1人", text)
+        self.assertIn("无有效记录：1人", text)
+        self.assertIn("过期（3）", text)
+        self.assertIn("未知（4）", text)
+        self.assertNotIn("群主（1）", text)
+        self.assertNotIn("机器人（5）", text)
+        self.assertIn("不会自动踢人", text)
 
 
 class FakeWebSocket:
