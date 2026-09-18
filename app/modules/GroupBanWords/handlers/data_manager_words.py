@@ -6,6 +6,21 @@ from datetime import datetime
 from .. import MODULE_NAME
 
 
+# 首次初始化时写入全局词库。规则刻意使用“行为组合”而非“广告”等泛词，
+# 避免正常讨论广告拦截机制、兼职政策或联系方式时被单词误伤。
+DEFAULT_AD_WORDS = {
+    r"(?i)刷单": 100,
+    r"(?i)(兼职|副业).{0,12}(日结|佣金|高薪|轻松赚)": 100,
+    r"(?i)(加|联系).{0,6}(微信|vx|v信).{0,12}(领取|咨询|合作|兼职|赚钱)": 100,
+    r"(?i)(进|加入).{0,8}(群|裙).{0,12}(领取|免费|福利|资料)": 100,
+    r"(?i)(代写|代做).{0,8}(作业|论文|课程设计|毕设)": 100,
+    r"(?i)(培训|办卡|考证).{0,12}(优惠|报名|名额|咨询)": 100,
+    r"(?i)(低价|内部价|白菜价).{0,12}(课程|网课|资料|会员)": 100,
+    r"(?i)(赚钱|返利|佣金).{0,12}(二维码|链接|进群|加群)": 100,
+}
+DEFAULT_AD_WORDS_VERSION = "default_ad_words_v1"
+
+
 class DataManager:
     # 类级别的数据库连接，所有实例共享
     _db_path = os.path.join("data", MODULE_NAME, "global_data.db")
@@ -82,6 +97,35 @@ class DataManager:
             )
             """
         )
+
+        # 记录一次性数据初始化版本。管理员后续删除或修改默认规则后，
+        # 重启机器人不会把这些规则强行恢复。
+        cursor.execute(
+            """
+            CREATE TABLE IF NOT EXISTS metadata (
+                key TEXT PRIMARY KEY,
+                value TEXT NOT NULL
+            )
+            """
+        )
+
+        cursor.execute(
+            "SELECT 1 FROM metadata WHERE key=?", (DEFAULT_AD_WORDS_VERSION,)
+        )
+        if cursor.fetchone() is None:
+            update_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            cursor.executemany(
+                """INSERT OR IGNORE INTO ban_words(group_id,word,weight,update_time)
+                   VALUES(?,?,?,?)""",
+                [
+                    (cls.GLOBAL_GROUP_ID, word, weight, update_time)
+                    for word, weight in DEFAULT_AD_WORDS.items()
+                ],
+            )
+            cursor.execute(
+                "INSERT INTO metadata(key,value) VALUES(?,?)",
+                (DEFAULT_AD_WORDS_VERSION, update_time),
+            )
 
         cls._conn.commit()
 

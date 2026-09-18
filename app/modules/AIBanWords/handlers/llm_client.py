@@ -7,10 +7,10 @@ from .. import MODULE_NAME
 # 配置
 SILICON_FLOW_API_KEY = os.getenv("SILICON_FLOW_API_KEY")
 BASE_URL = "https://api.siliconflow.cn/v1/chat/completions"
+DEFAULT_MODEL = os.getenv("AIBANWORDS_MODEL", "Qwen/Qwen3.5-9B")
 
 
-# Qwen/Qwen2-7B-Instruct, Qwen/Qwen2.5-72B-Instruct
-async def check_message(text, model="Qwen/Qwen2-7B-Instruct"):
+async def check_message(text, model=None):
     """
     检测消息是否违规
     :param text: 待检测的文本
@@ -59,7 +59,7 @@ async def check_message(text, model="Qwen/Qwen2-7B-Instruct"):
     }
 
     data = {
-        "model": model,
+        "model": model or DEFAULT_MODEL,
         "messages": [
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": f"待检测消息：{text}"},
